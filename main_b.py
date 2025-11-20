@@ -7,22 +7,29 @@ from typing import List, Dict, Any
 
 from fetch_all import fetch_post_threads
 from editor import plan_script_with_llm
-from translate import translate_to_casual_japanese
+from glossary import load_glossary, compile_glossary_patterns
+from glossary_translator import translate_to_casual_japanese_glossary as translate_to_casual_japanese
 from tts import generate_tts, POSTER_VOICE, COMMENT_VOICES
 
 OUT_DIR = "data"
 TTS_DIR = os.path.join(OUT_DIR, "tts")
 os.makedirs(TTS_DIR, exist_ok=True)
 
-def translate_selection(selection_ids: List[str], index: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, str]]:
+def translate_selection(selection_ids: List[str], index: Dict[str, Dict[str, Any]], patterns) -> Dict[str, Dict[str, str]]:
     """
     選ばれたコメント（ID）のみ翻訳してキャッシュ辞書を返す: {id: {"en":..., "ja":...}}
     """
+    # 事前に辞書をロード＆コンパイル（毎回ロードが嫌なら外に出してキャッシュでもOK）
+    # 正規化済みがあればそちらを優先
+    gl_path = "glossary_normalized.csv" if os.path.exists("glossary_normalized.csv") else "glossary.csv"
+    gl_terms = load_glossary(gl_path)
+    patterns = compile_glossary_patterns(gl_terms)
+
     result = {}
     for cid in selection_ids:
         item = index[cid]
         en = item["body"]
-        ja = translate_to_casual_japanese(en)
+        ja = translate_to_casual_japanese(en, patterns)  # ← glossary対応ラッパーを使う
         result[cid] = {"en": en, "ja": ja}
     return result
 
@@ -105,6 +112,11 @@ def main():
     print("[i] title:", title_en)
     print("[i] threads:", len(data["threads"]))
 
+    # ★ glossary の読み込みと patterns の生成（1回だけ）
+    gl_path = "glossary_normalized.csv" if os.path.exists("glossary_normalized.csv") else "glossary.csv"
+    gl_terms = load_glossary(gl_path)
+    patterns = compile_glossary_patterns(gl_terms)
+
     # 3) LLMで「3分構成」の選抜・順序化
     plan = plan_script_with_llm(data["title"], data["threads"], target_duration_sec=180)
     # 例: {"scenes":[{"scene_title":"…","thread_top_id":"abc","comment_order":["abc","r1","r3"]}, ...]}
@@ -114,10 +126,10 @@ def main():
     # 4) 選ばれたコメントだけ翻訳
     index = build_index(data["threads"])
     selection_ids = flatten_scene_ids(plan)
-    translations = translate_selection(selection_ids, index)
+    translations = translate_selection(selection_ids, index, patterns)
 
     # タイトルも翻訳
-    title_ja = translate_to_casual_japanese(title_en)
+    title_ja = translate_to_casual_japanese(title_en, patterns)
 
     # 5) TTS音声を生成
     make_tts_files(title_ja, plan, translations)
